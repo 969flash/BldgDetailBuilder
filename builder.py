@@ -182,6 +182,7 @@ def cluster_breps(breps, threshold=0.5):
 
 
 def bake_to_layer(objects, layer_name):
+    # TODO: 같은 클러스터 별로 라이노 도큐먼트 생성싱 그룹핑 해야함
     if not objects:
         return
     if not isinstance(objects, list):
