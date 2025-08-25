@@ -1,0 +1,64 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.venv*/
+pip-wheel-metadata/
+
+# Test/Type/Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.tox/
+.nox/
+
+# Coverage
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs and temp
+*.log
+*.tmp
+
+# OS cruft
+Thumbs.db
+Desktop.ini
+
+# Editors/IDEs (uncomment if you don't want to track workspace settings)
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Rhino / Grasshopper
+# Keep design files (.3dm, .gh, .ghx). Ignore backups/autosaves/caches.
+*.3dmbak
+*.rhl
+*.bak
+AutoSave*.*
+~$*
+# Grasshopper temporary/compiled/cache files
+*.gha.tmp
+*.ghcache
+*.ghuser.bak
+# Rhino render cache folders (if present in project)
+Render Cache/
+Textures/Render Cache/
