@@ -1,4 +1,5 @@
 # -*- coding:utf-8 -*-
+# r: clipper
 try:
     from typing import List, Tuple, Dict, Any, Optional
 except ImportError:
@@ -36,15 +37,18 @@ class FacadeGenerator:
         self,
         building_brep: geo.Brep,
         floor_height: float,
-        *,
         facade_type: int = 1,
         pattern_length: float = 4.0,
         pattern_depth: float = 1.0,
         pattern_ratio: float = 0.8,
+        facade_offset: float = 0.2,
     ):
         self.building_brep = building_brep
         self.building_curve = utils.get_outline_from_closed_brep(
             building_brep, geo.Plane.WorldXY
+        )
+        self.building_curve = utils.offset_regions_outward(
+            self.building_curve, facade_offset
         )
         self.building_height = self._get_building_height()
         # 층고 및 층수 계산 (반올림 사용). 유효하지 않은 층고 입력은 1층 처리
@@ -243,6 +247,7 @@ _pattern_length = globals().get("pattern_length", None)
 _pattern_depth = globals().get("pattern_depth", None)
 _pattern_ratio = globals().get("pattern_ratio", None)
 _pattern_type = globals().get("pattern_type", None)
+_facade_offset = globals().get("facade_offset", None)
 
 facade_generator = FacadeGenerator(
     _building_brep,
@@ -251,6 +256,7 @@ facade_generator = FacadeGenerator(
     pattern_length=float(_pattern_length) if _pattern_length is not None else 4.0,
     pattern_depth=float(_pattern_depth) if _pattern_depth is not None else 1.0,
     pattern_ratio=float(_pattern_ratio) if _pattern_ratio is not None else 0.8,
+    facade_offset=float(_facade_offset) if _facade_offset is not None else 0.2,
 )
 facade = facade_generator.generate_facade(_pattern_type)
 
