@@ -1,5 +1,4 @@
 # -*- coding:utf-8 -*-
-# r: clipper
 try:
     from typing import List, Tuple, Dict, Any, Optional
 except ImportError:
@@ -49,7 +48,8 @@ class FacadeGenerator:
         )
         self.building_curve = utils.offset_regions_outward(
             self.building_curve, facade_offset
-        )
+        )[0]
+
         self.building_height = self._get_building_height()
         # 층고 및 층수 계산 (반올림 사용). 유효하지 않은 층고 입력은 1층 처리
         self.floor_height = float(floor_height)
@@ -122,87 +122,19 @@ class FacadeGenerator:
 
         return self.generate_facade_type_1(seg, extrude_height)
 
-    def _generate_facades_from_seg(
-        self, seg: geo.Curve, extrude_height: float
-    ) -> Optional[Facade]:
-        """패턴 파라미터 기반의 기본(타입1) 파사드 생성"""
-        # 패턴 파라미터 사용
-        pts_from_seg = utils.get_pts_by_length(
-            seg, self.pattern_length, include_start=True
-        )
-        if not pts_from_seg or len(pts_from_seg) < 2:
-            return None
+    # 내부 유틸: 패턴화된 분할점을 기준으로 glass/wall(/frame) 커브 세트를 생성
+    def _segs_by_pattern(
+        self,
+        seg: geo.Curve,
+        *,
+        offset_partition_outward: bool,
+        add_frame_outward: bool,
+    ) -> Optional[tuple[list[geo.Curve], list[geo.Curve], list[geo.Curve]]]:
+        """주어진 세그먼트를 패턴 길이/비율로 분할하고 역할별 커브 리스트를 생성한다.
 
-        glass_segs: list[geo.Curve] = []
-        wall_segs: list[geo.Curve] = []
-
-        # 인접한 점 쌍으로 안전하게 순회
-        for pt, next_pt in zip(pts_from_seg, pts_from_seg[1:]):
-            vector = utils.get_vector_from_pts(pt, next_pt)
-            if hasattr(vector, "IsZero") and vector.IsZero:
-                continue
-            vector.Unitize()
-            mid_pt = pt + vector * (self.pattern_length * self.pattern_ratio)
-            out_vector = utils.get_outside_perp_vec_from_pt(mid_pt, self.building_curve)
-            mid_pt += out_vector * self.pattern_depth
-
-            glass_segs.append(geo.LineCurve(pt, mid_pt))
-            wall_segs.append(geo.LineCurve(mid_pt, next_pt))
-
-        def _ext_to_brep(line: geo.Curve) -> Optional[geo.Brep]:
-            ext = geo.Extrusion.Create(line, extrude_height, False)
-            return ext.ToBrep() if ext else None
-
-        glass_breps = [b for b in (_ext_to_brep(seg) for seg in glass_segs) if b]
-        wall_breps = [b for b in (_ext_to_brep(seg) for seg in wall_segs) if b]
-        if not glass_breps and not wall_breps:
-            return None
-        return Facade(glass_breps, wall_breps)
-
-    def generate_facade_type_1(
-        self, seg: geo.Curve, extrude_height: float
-    ) -> Optional[Facade]:
-        return self._generate_facades_from_seg(seg, extrude_height)
-
-    # 타입 2: 직선형 파사드
-    def generate_facade_type_2(
-        self, seg: geo.Curve, extrude_height: float
-    ) -> Optional[Facade]:
-        """직선형 파사드 생성, 패턴 비율에 따라 glass 와 wall 반복"""
-        pts_from_seg = utils.get_pts_by_length(
-            seg, self.pattern_length, include_start=True
-        )
-        if not pts_from_seg or len(pts_from_seg) < 2:
-            return None
-
-        glass_segs: list[geo.Curve] = []
-        wall_segs: list[geo.Curve] = []
-
-        # 인접한 점 쌍으로 안전하게 순회
-        for pt, next_pt in zip(pts_from_seg, pts_from_seg[1:]):
-            vector = utils.get_vector_from_pts(pt, next_pt)
-            if hasattr(vector, "IsZero") and vector.IsZero:
-                continue
-            vector.Unitize()
-            mid_pt = pt + vector * (self.pattern_length * self.pattern_ratio)
-            glass_segs.append(geo.LineCurve(pt, mid_pt))
-            wall_segs.append(geo.LineCurve(mid_pt, next_pt))
-
-        def _ext_to_brep(line: geo.Curve) -> Optional[geo.Brep]:
-            ext = geo.Extrusion.Create(line, extrude_height, False)
-            return ext.ToBrep() if ext else None
-
-        glass_breps = [b for b in (_ext_to_brep(seg) for seg in glass_segs) if b]
-        wall_breps = [b for b in (_ext_to_brep(seg) for seg in wall_segs) if b]
-        if not glass_breps and not wall_breps:
-            return None
-        return Facade(glass_breps, wall_breps)
-
-    # 타입 3: (임시) 타입 1과 동일 동작. 이후 확장 가능
-    def generate_facade_type_3(
-        self, seg: geo.Curve, extrude_height: float
-    ) -> Optional[Facade]:
-        # 패턴 파라미터 사용
+        - offset_partition_outward: 분할점 자체를 외측으로 이동해 glass/wall 경계에 깊이를 반영할지 여부 (type1)
+        - add_frame_outward: 분할점에서 외측으로 프레임 커브를 추가할지 여부 (type3)
+        """
         pts_from_seg = utils.get_pts_by_length(
             seg, self.pattern_length, include_start=True
         )
@@ -213,30 +145,110 @@ class FacadeGenerator:
         wall_segs: list[geo.Curve] = []
         frame_segs: list[geo.Curve] = []
 
-        # 인접한 점 쌍으로 안전하게 순회
         for pt, next_pt in zip(pts_from_seg, pts_from_seg[1:]):
             vector = utils.get_vector_from_pts(pt, next_pt)
             if hasattr(vector, "IsZero") and vector.IsZero:
                 continue
             vector.Unitize()
-            mid_pt = pt + vector * (self.pattern_length * self.pattern_ratio)
-            out_vector = utils.get_outside_perp_vec_from_pt(mid_pt, self.building_curve)
-            out_mid_pt = mid_pt + out_vector * self.pattern_depth
 
-            frame_segs.append(geo.LineCurve(mid_pt, out_mid_pt))
-            glass_segs.append(geo.LineCurve(pt, mid_pt))
-            wall_segs.append(geo.LineCurve(mid_pt, next_pt))
+            div_pt = pt + vector * (self.pattern_length * self.pattern_ratio)
 
+            out_vec: Optional[geo.Vector3d] = None
+            if offset_partition_outward or add_frame_outward:
+                out_vec = utils.get_outside_perp_vec_from_pt(
+                    div_pt, self.building_curve
+                )
+
+            # 프레임 커브 생성 (type3)
+            if add_frame_outward and out_vec is not None:
+                out_mid = div_pt + out_vec * self.pattern_depth
+                frame_segs.append(geo.LineCurve(div_pt, out_mid))
+
+            # 분할점을 외측으로 밀어 경계를 형성할지 (type1)
+            partition_pt = (
+                div_pt + (out_vec * self.pattern_depth)
+                if (offset_partition_outward and out_vec is not None)
+                else div_pt
+            )
+
+            glass_segs.append(geo.LineCurve(pt, partition_pt))
+            wall_segs.append(geo.LineCurve(partition_pt, next_pt))
+
+        # 마지막 점과 세그먼트 끝점 연결은 wall 처리
+        if len(pts_from_seg) >= 2:
+            last_pt = pts_from_seg[-1]
+            end_pt = seg.PointAtEnd
+            wall_segs.append(geo.LineCurve(last_pt, end_pt))
+
+        return glass_segs, wall_segs, frame_segs
+
+    # 내부 유틸: 커브 세트를 층 높이만큼 압출하여 Facade로 변환
+    def _extrude_to_facade(
+        self,
+        glass_segs: list[geo.Curve],
+        wall_segs: list[geo.Curve],
+        frame_segs: list[geo.Curve],
+        extrude_height: float,
+    ) -> Optional[Facade]:
         def _ext_to_brep(line: geo.Curve) -> Optional[geo.Brep]:
             ext = geo.Extrusion.Create(line, extrude_height, False)
             return ext.ToBrep() if ext else None
 
-        glass_breps = [b for b in (_ext_to_brep(seg) for seg in glass_segs) if b]
-        wall_breps = [b for b in (_ext_to_brep(seg) for seg in wall_segs) if b]
-        frame_breps = [b for b in (_ext_to_brep(seg) for seg in frame_segs) if b]
-        if not glass_breps and not wall_breps:
+        glass_breps = [b for b in (_ext_to_brep(c) for c in glass_segs) if b]
+        wall_breps = [b for b in (_ext_to_brep(c) for c in wall_segs) if b]
+        frame_breps = [b for b in (_ext_to_brep(c) for c in frame_segs) if b]
+        if not glass_breps and not wall_breps and not frame_breps:
             return None
         return Facade(glass_breps, wall_breps, frame_breps)
+
+    def generate_facade_type_1(
+        self, seg: geo.Curve, extrude_height: float
+    ) -> Optional[Facade]:
+        """패턴 파라미터 기반의 기본(타입1) 파사드 생성"""
+        segs = self._segs_by_pattern(
+            seg,
+            offset_partition_outward=True,  # 분할점 자체를 외측으로 이동해 경계 형성
+            add_frame_outward=False,  # 프레임 없음
+        )
+        if not segs:
+            return None
+        glass_segs, wall_segs, frame_segs = segs
+        return self._extrude_to_facade(
+            glass_segs, wall_segs, frame_segs, extrude_height
+        )
+
+    # 타입 2: 직선형 파사드
+    def generate_facade_type_2(
+        self, seg: geo.Curve, extrude_height: float
+    ) -> Optional[Facade]:
+        """직선형 파사드 생성, 패턴 비율에 따라 glass 와 wall 반복"""
+        segs = self._segs_by_pattern(
+            seg,
+            offset_partition_outward=False,  # 분할점 외측 이동 없음
+            add_frame_outward=False,  # 프레임 없음
+        )
+        if not segs:
+            return None
+        glass_segs, wall_segs, frame_segs = segs
+        return self._extrude_to_facade(
+            glass_segs, wall_segs, frame_segs, extrude_height
+        )
+
+    # 타입 3: (임시) 타입 1과 동일 동작. 이후 확장 가능
+    def generate_facade_type_3(
+        self, seg: geo.Curve, extrude_height: float
+    ) -> Optional[Facade]:
+        segs = self._segs_by_pattern(
+            seg,
+            offset_partition_outward=False,  # 분할점 외측 이동 없음
+            add_frame_outward=True,  # 프레임 생성
+        )
+        if not segs:
+            return None
+        glass_segs, wall_segs, frame_segs = segs
+        return self._extrude_to_facade(
+            glass_segs, wall_segs, frame_segs, extrude_height
+        )
 
 
 # Grasshopper 컴포넌트 입력이 있을 때만 실행되도록 안전 가드

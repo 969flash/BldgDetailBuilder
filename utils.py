@@ -1,5 +1,4 @@
 # -*- coding:utf-8 -*-
-# r: clipper
 # utils_geometry.py
 
 # ==============================================================================
@@ -237,7 +236,7 @@ def get_outline_from_closed_brep(brep: geo.Brep, plane: geo.Plane) -> geo.Curve:
 
 
 class Offset:
-    """ghcomp.ClipperComponents.PolylineOffset를 사용한 오프셋 클래스"""
+    """RhinoCommon 기반 오프셋 유틸리티 (Clipper 미사용)"""
 
     class _PolylineOffsetResult:
         def __init__(self):
@@ -251,29 +250,101 @@ class Offset:
         if not curves:
             raise ValueError("No Curves to offset")
 
-        plane = geo.Plane(geo.Point3d(0, 0, curves[0].PointAtEnd.Z), geo.Vector3d.ZAxis)
+        # 옵션 처리 (필요시 확장 가능)
+        tol = kwargs.get("tol", Rhino.RhinoMath.ZeroTolerance)
+        plane = kwargs.get("plane", geo.Plane.WorldXY)
 
-        options = {
-            "miter": BIGNUM,
-            "closed_fillet": 2,  # 0:round, 1:square, 2:miter
-            "open_fillet": 2,  # 0:round, 1:square, 2:butt
-            "tol": Rhino.RhinoMath.ZeroTolerance,
-        }
-        options.update(kwargs)
+        # 거리 목록 정규화
+        if isinstance(dists, (int, float)):
+            dist_list = [float(dists)] * len(curves)
+        else:
+            dist_list = [float(d) for d in dists]
+            if len(dist_list) != len(curves):
+                raise ValueError(
+                    "Length of dists must match curves or be a single number"
+                )
 
-        result = ghcomp.ClipperComponents.PolylineOffset(
-            curves,
-            dists,
-            plane,
-            options["tol"],
-            options["closed_fillet"],
-            options["open_fillet"],
-            options["miter"],
-        )
+        outward_all: List[geo.Curve] = []
+        inward_all: List[geo.Curve] = []
+
+        for crv, dist in zip(curves, dist_list):
+            if not crv or not crv.IsClosed:
+                # 열린 커브는 Offset 결과 해석이 애매하므로 스킵
+                # 필요 시 open curve 지원 로직 추가 가능
+                continue
+
+            # 커브의 자체 평면을 우선 사용 (불가하면 입력 plane)
+            try:
+                ok, crv_plane = crv.TryGetPlane()
+            except Exception:
+                ok, crv_plane = False, None
+            plane_used = crv_plane if ok and crv_plane else plane
+
+            # 기준 면적 계산 (원래 커브 면적)
+            orig_breps = geo.Brep.CreatePlanarBreps(crv, tol)
+            orig_area = 0.0
+            if orig_breps:
+                for b in orig_breps:
+                    amp = geo.AreaMassProperties.Compute(b)
+                    if amp:
+                        orig_area += amp.Area
+
+            # 양/음 오프셋 모두 계산 후 면적 비교로 outward/inward를 결정
+            d = abs(dist)
+
+            def do_offset(distance: float):
+                try:
+                    return crv.Offset(
+                        plane_used, distance, tol, geo.CurveOffsetCornerStyle.Sharp
+                    )
+                except TypeError:
+                    return crv.Offset(plane_used, distance, tol)
+
+            pos = do_offset(+d)
+            neg = do_offset(-d)
+
+            def total_area(curves_list: Optional[List[geo.Curve]]) -> float:
+                if not curves_list:
+                    return -1.0
+                area_sum = 0.0
+                for c in curves_list:
+                    breps = geo.Brep.CreatePlanarBreps(c, tol)
+                    if not breps:
+                        continue
+                    for b in breps:
+                        amp = geo.AreaMassProperties.Compute(b)
+                        if amp:
+                            area_sum += amp.Area
+                return area_sum
+
+            area_pos = total_area(pos)
+            area_neg = total_area(neg)
+
+            # 원래 면적보다 큰 쪽을 outward로 채택 (둘 다 유효하지 않으면 스킵)
+            chosen_out, chosen_in = None, None
+            if area_pos <= 0 and area_neg <= 0:
+                continue
+            if orig_area > 0:
+                # 원 면적 대비 증가한 쪽이 outward
+                if area_pos > area_neg:
+                    chosen_out, chosen_in = pos, neg
+                else:
+                    chosen_out, chosen_in = neg, pos
+            else:
+                # 원 면적을 구할 수 없으면 더 큰 면적을 outward로 가정
+                if area_pos >= area_neg:
+                    chosen_out, chosen_in = pos, neg
+                else:
+                    chosen_out, chosen_in = neg, pos
+
+            if chosen_out:
+                outward_all.extend(list(chosen_out))
+            if chosen_in:
+                inward_all.extend(list(chosen_in))
 
         offset_result = Offset._PolylineOffsetResult()
-        offset_result.contour = result.get("contour")
-        offset_result.holes = result.get("holes")
+        offset_result.contour = outward_all
+        offset_result.holes = inward_all
         return offset_result
 
 
@@ -283,7 +354,10 @@ def offset_regions_inward(
     """닫힌 영역(들)을 안쪽으로 오프셋합니다."""
     if not dist:
         return regions if isinstance(regions, list) else [regions]
-    return Offset().polyline_offset(regions, -abs(dist), **kwargs).holes
+    res = Offset().polyline_offset(
+        regions if isinstance(regions, list) else [regions], dist, **kwargs
+    )
+    return res.holes or []
 
 
 def offset_regions_outward(
@@ -292,4 +366,7 @@ def offset_regions_outward(
     """닫힌 영역(들)을 바깥쪽으로 오프셋합니다."""
     if not dist:
         return regions if isinstance(regions, list) else [regions]
-    return Offset().polyline_offset(regions, abs(dist), **kwargs).contour
+    res = Offset().polyline_offset(
+        regions if isinstance(regions, list) else [regions], dist, **kwargs
+    )
+    return res.contour or []
