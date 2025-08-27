@@ -222,15 +222,19 @@ def get_outline_from_closed_brep(brep: geo.Brep, plane: geo.Plane) -> geo.Curve:
     """
     if not isinstance(brep, geo.Brep) or not brep.IsSolid:
         raise TypeError("입력은 닫힌 Brep(폴리서페이스)만 허용됩니다.")
+    bbox = brep.GetBoundingBox(True)
+    contour_start = geo.Point3d(0, 0, bbox.Min.Z)
+    contour_end = geo.Point3d(0, 0, bbox.Max.Z)
+    curves = geo.Brep.CreateContourCurves(
+        brep, contour_start, contour_end, (bbox.Max.Z - bbox.Min.Z)
+    )
 
-    curves = geo.Brep.CreateContourCurves(brep, plane)
     if not curves or len(curves) == 0:
         return None
 
     # Z값이 가장 낮은 커브 선택 (평균 Z값 기준)
     def avg_z(curve):
-        bbox = curve.GetBoundingBox(True)
-        return (bbox.Min.Z + bbox.Max.Z) / 2.0
+        return curve.PointAtStart.Z
 
     return min(curves, key=avg_z)
 

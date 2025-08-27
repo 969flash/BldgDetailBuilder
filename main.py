@@ -9,26 +9,20 @@ import scriptcontext as sc  # type: ignore
 import Rhino  # type: ignore
 import ghpythonlib.components as ghcomp  # type: ignore
 import utils
+import facade_plan
 import importlib
 
 # 모듈 새로고침
 importlib.reload(utils)
+importlib.reload(facade_plan)
+
+# facade_plan에서 Facade 클래스를 가져옴
+from facade_plan import Facade
+
 ####
 # input : 3D Building  Brep
 # output : Building Facade Breps
 ####
-
-
-class Facade:
-    def __init__(
-        self,
-        glasses: list[geo.Brep],
-        walls: list[geo.Brep],
-        frames: list[geo.Brep] = None,
-    ) -> None:
-        self.glasses = glasses
-        self.walls = walls
-        self.frames = frames if frames is not None else []
 
 
 class FacadeGenerator:
@@ -41,6 +35,8 @@ class FacadeGenerator:
         pattern_depth: float = 1.0,
         pattern_ratio: float = 0.8,
         facade_offset: float = 0.2,
+        slab_height: float = 0.0,
+        slab_offset: float = 0.0,
     ):
         self.building_brep = building_brep
         self.building_curve = utils.get_outline_from_closed_brep(
@@ -66,39 +62,93 @@ class FacadeGenerator:
         self.pattern_depth = float(pattern_depth)
         self.pattern_ratio = float(pattern_ratio)
 
+        # 슬래브 파라미터
+        self.slab_height = float(slab_height)
+        self.slab_offset = float(slab_offset)
+
     def _get_building_height(self) -> float:
         # 건물의 높이를 계산하는 로직을 구현합니다.
         bbox = self.building_brep.GetBoundingBox(True)
         return bbox.Max.Z - bbox.Min.Z
 
-    def generate_facade(self, pattern_type: Optional[int] = None) -> Facade:
-        # 하나의 건물 메스에 대해, 모든 세그먼트 × 모든 층의 결과를 하나의 Facade로 집계
-        building_segs = utils.explode_curve(self.building_curve)
+    def generate(self, pattern_type: int = 1) -> Facade:
+        if self.slab_height >= self.floor_height:
+            raise ValueError(
+                f"slab_height ({self.slab_height}) must be less than floor_height ({self.floor_height})"
+            )
 
-        all_glasses: list[geo.Brep] = []
-        all_walls: list[geo.Brep] = []
-        all_frames: list[geo.Brep] = []
+        building_segs = utils.explode_curve(self.building_curve)
+        all_glasses, all_walls, all_frames, all_slabs = [], [], [], []
+
+        facade_type_obj = facade_plan.FacadeTypeRegistry.create_facade_type(
+            pattern_type,
+            self.pattern_length,
+            self.pattern_depth,
+            self.pattern_ratio,
+            self.building_curve,
+        )
 
         for floor in range(self.building_floor):
             base_z = floor * self.floor_height
             if base_z >= self.building_height:
                 break
-            # 마지막 층은 남은 높이만큼만 생성
-            extrude_h = min(self.floor_height, self.building_height - base_z)
 
-            for seg in building_segs:
-                seg_facade = self._dispatch_generate(seg, extrude_h, pattern_type)
-                if not seg_facade:
-                    continue
-                if base_z > 0:
-                    seg_facade = self._move_facade(
-                        seg_facade, geo.Vector3d.ZAxis * base_z
-                    )
-                all_glasses.extend(seg_facade.glasses)
-                all_walls.extend(seg_facade.walls)
-                all_frames.extend(seg_facade.frames)
+            # 층별 전체 높이 계산
+            floor_height = min(self.floor_height, self.building_height - base_z)
 
-        return Facade(all_glasses, all_walls, all_frames)
+            # 슬래브 생성
+            slab_brep = self._generate_floor_slab(base_z)
+            if slab_brep:
+                all_slabs.append(slab_brep)
+
+            # 파사드 높이 계산 (슬래브 높이 제외)
+            facade_height = floor_height - self.slab_height
+
+            # 파사드 생성
+            facades = self._generate_floor_facade(
+                building_segs, facade_type_obj, base_z, facade_height
+            )
+            all_glasses.extend(facades["glasses"])
+            all_walls.extend(facades["walls"])
+            all_frames.extend(facades["frames"])
+
+        return Facade(all_glasses, all_walls, all_frames, all_slabs)
+
+    def _generate_floor_slab(self, base_z: float) -> Optional[geo.Brep]:
+        """층별 슬래브를 생성하는 메서드"""
+        if self.slab_height <= 0:
+            return None
+
+        slab_brep = self._create_slab(0)  # Z=0에서 생성
+        if slab_brep:
+            # base_z 위치로 이동
+            slab_brep = utils.move_brep(slab_brep, geo.Vector3d.ZAxis * base_z)
+        return slab_brep
+
+    def _generate_floor_facade(
+        self, building_segs, facade_type_obj, base_z: float, facade_height: float
+    ) -> dict:
+        """층별 파사드를 생성하는 메서드"""
+        glasses, walls, frames = [], [], []
+
+        facade_z_offset = base_z + (self.slab_height if self.slab_height > 0 else 0)
+
+        for seg in building_segs:
+            seg_facade = facade_type_obj.generate(seg, facade_height)
+            if not seg_facade:
+                continue
+
+            # Z 위치로 이동
+            if facade_z_offset > 0:
+                seg_facade = self._move_facade(
+                    seg_facade, geo.Vector3d.ZAxis * facade_z_offset
+                )
+
+            glasses.extend(seg_facade.glasses)
+            walls.extend(seg_facade.walls)
+            frames.extend(seg_facade.frames)
+
+        return {"glasses": glasses, "walls": walls, "frames": frames}
 
     def _move_facade(self, facade: Facade, vector: geo.Vector3d) -> Facade:
         def _mv(b: geo.Brep) -> geo.Brep:
@@ -107,171 +157,77 @@ class FacadeGenerator:
         glasses = [_mv(b) for b in facade.glasses if b]
         walls = [_mv(b) for b in facade.walls if b]
         frames = [_mv(b) for b in facade.frames if b]
-        return Facade(glasses, walls, frames)
+        slabs = [_mv(b) for b in facade.slabs if b]
+        return Facade(glasses, walls, frames, slabs)
 
-    def _dispatch_generate(
-        self, seg: geo.Curve, extrude_height: float, pattern_type: Optional[int] = None
-    ) -> Optional[Facade]:
-        """facade_type에 따라 타입별 생성 함수로 라우팅"""
-        if pattern_type == 1:
-            return self.generate_facade_type_1(seg, extrude_height)
-        if pattern_type == 2:
-            return self.generate_facade_type_2(seg, extrude_height)
-        if pattern_type == 3:
-            return self.generate_facade_type_3(seg, extrude_height)
+    def _offset_slab_curve(self) -> Optional[geo.Curve]:
+        """슬래브 커브를 오프셋하는 메서드"""
+        if self.slab_offset == 0:
+            return self.building_curve
 
-        return self.generate_facade_type_1(seg, extrude_height)
-
-    # 내부 유틸: 패턴화된 분할점을 기준으로 glass/wall(/frame) 커브 세트를 생성
-    def _segs_by_pattern(
-        self,
-        seg: geo.Curve,
-        *,
-        offset_partition_outward: bool,
-        add_frame_outward: bool,
-    ) -> Optional[tuple[list[geo.Curve], list[geo.Curve], list[geo.Curve]]]:
-        """주어진 세그먼트를 패턴 길이/비율로 분할하고 역할별 커브 리스트를 생성한다.
-
-        - offset_partition_outward: 분할점 자체를 외측으로 이동해 glass/wall 경계에 깊이를 반영할지 여부 (type1)
-        - add_frame_outward: 분할점에서 외측으로 프레임 커브를 추가할지 여부 (type3)
-        """
-        pts_from_seg = utils.get_pts_by_length(
-            seg, self.pattern_length, include_start=True
-        )
-        if not pts_from_seg or len(pts_from_seg) < 2:
-            return None
-
-        glass_segs: list[geo.Curve] = []
-        wall_segs: list[geo.Curve] = []
-        frame_segs: list[geo.Curve] = []
-
-        for pt, next_pt in zip(pts_from_seg, pts_from_seg[1:]):
-            vector = utils.get_vector_from_pts(pt, next_pt)
-            if hasattr(vector, "IsZero") and vector.IsZero:
-                continue
-            vector.Unitize()
-
-            div_pt = pt + vector * (self.pattern_length * self.pattern_ratio)
-
-            out_vec: Optional[geo.Vector3d] = None
-            if offset_partition_outward or add_frame_outward:
-                out_vec = utils.get_outside_perp_vec_from_pt(
-                    div_pt, self.building_curve
-                )
-
-            # 프레임 커브 생성 (type3)
-            if add_frame_outward and out_vec is not None:
-                out_mid = div_pt + out_vec * self.pattern_depth
-                frame_segs.append(geo.LineCurve(div_pt, out_mid))
-
-            # 분할점을 외측으로 밀어 경계를 형성할지 (type1)
-            partition_pt = (
-                div_pt + (out_vec * self.pattern_depth)
-                if (offset_partition_outward and out_vec is not None)
-                else div_pt
+        if self.slab_offset < 0:
+            slab_curves = utils.offset_regions_outward(
+                self.building_curve, self.slab_offset
+            )
+        else:
+            slab_curves = utils.offset_regions_inward(
+                self.building_curve, self.slab_offset
             )
 
-            glass_segs.append(geo.LineCurve(pt, partition_pt))
-            wall_segs.append(geo.LineCurve(partition_pt, next_pt))
-
-        # 마지막 점과 세그먼트 끝점 연결은 wall 처리
-        if len(pts_from_seg) >= 2:
-            last_pt = pts_from_seg[-1]
-            end_pt = seg.PointAtEnd
-            wall_segs.append(geo.LineCurve(last_pt, end_pt))
-
-        return glass_segs, wall_segs, frame_segs
-
-    # 내부 유틸: 커브 세트를 층 높이만큼 압출하여 Facade로 변환
-    def _extrude_to_facade(
-        self,
-        glass_segs: list[geo.Curve],
-        wall_segs: list[geo.Curve],
-        frame_segs: list[geo.Curve],
-        extrude_height: float,
-    ) -> Optional[Facade]:
-        def _ext_to_brep(line: geo.Curve) -> Optional[geo.Brep]:
-            ext = geo.Extrusion.Create(line, extrude_height, False)
-            return ext.ToBrep() if ext else None
-
-        glass_breps = [b for b in (_ext_to_brep(c) for c in glass_segs) if b]
-        wall_breps = [b for b in (_ext_to_brep(c) for c in wall_segs) if b]
-        frame_breps = [b for b in (_ext_to_brep(c) for c in frame_segs) if b]
-        if not glass_breps and not wall_breps and not frame_breps:
+        if not slab_curves:
+            print("Failed to offset slab curve.")
+            print("slab_offset:", self.slab_offset)
+            print(
+                "slab_offset 값을 building_curve에 적절한 수치로 지정하거나 building_curve가 적합한 형태인지 확인하세요."
+            )
             return None
-        return Facade(glass_breps, wall_breps, frame_breps)
 
-    def generate_facade_type_1(
-        self, seg: geo.Curve, extrude_height: float
-    ) -> Optional[Facade]:
-        """패턴 파라미터 기반의 기본(타입1) 파사드 생성"""
-        segs = self._segs_by_pattern(
-            seg,
-            offset_partition_outward=True,  # 분할점 자체를 외측으로 이동해 경계 형성
-            add_frame_outward=False,  # 프레임 없음
-        )
-        if not segs:
-            return None
-        glass_segs, wall_segs, frame_segs = segs
-        return self._extrude_to_facade(
-            glass_segs, wall_segs, frame_segs, extrude_height
-        )
+        return slab_curves[0]
 
-    # 타입 2: 직선형 파사드
-    def generate_facade_type_2(
-        self, seg: geo.Curve, extrude_height: float
-    ) -> Optional[Facade]:
-        """직선형 파사드 생성, 패턴 비율에 따라 glass 와 wall 반복"""
-        segs = self._segs_by_pattern(
-            seg,
-            offset_partition_outward=False,  # 분할점 외측 이동 없음
-            add_frame_outward=False,  # 프레임 없음
-        )
-        if not segs:
-            return None
-        glass_segs, wall_segs, frame_segs = segs
-        return self._extrude_to_facade(
-            glass_segs, wall_segs, frame_segs, extrude_height
-        )
+    def _create_slab(self, base_z: float = 0) -> Optional[geo.Brep]:
+        """슬래브를 생성하는 메서드 (Z=0에서 생성, 외부에서 이동 처리)"""
+        # 슬래브용 커브 생성 (slab_offset만큼 오프셋)
+        slab_curve = self.building_curve
+        if self.slab_offset != 0:
+            slab_curve = self._offset_slab_curve()
 
-    # 타입 3: (임시) 타입 1과 동일 동작. 이후 확장 가능
-    def generate_facade_type_3(
-        self, seg: geo.Curve, extrude_height: float
-    ) -> Optional[Facade]:
-        segs = self._segs_by_pattern(
-            seg,
-            offset_partition_outward=False,  # 분할점 외측 이동 없음
-            add_frame_outward=True,  # 프레임 생성
-        )
-        if not segs:
-            return None
-        glass_segs, wall_segs, frame_segs = segs
-        return self._extrude_to_facade(
-            glass_segs, wall_segs, frame_segs, extrude_height
-        )
+        extruded_slab = geo.Extrusion.Create(slab_curve, self.slab_height, True)
+        slab_brep_final = extruded_slab.ToBrep()
+
+        # base_z가 0이 아닌 경우에만 이동 (하위 호환성 유지)
+        if base_z != 0:
+            slab_brep_final = utils.move_brep(
+                slab_brep_final, geo.Vector3d.ZAxis * base_z
+            )
+        return slab_brep_final
 
 
 # Grasshopper 컴포넌트 입력이 있을 때만 실행되도록 안전 가드
 _building_brep = globals().get("building_brep", None)
-_floor_height = globals().get("floor_height", None)
-_facade_type = globals().get("facade_type", None)
-_pattern_length = globals().get("pattern_length", None)
-_pattern_depth = globals().get("pattern_depth", None)
-_pattern_ratio = globals().get("pattern_ratio", None)
-_pattern_type = globals().get("pattern_type", None)
-_facade_offset = globals().get("facade_offset", None)
+_floor_height = float(globals().get("floor_height", 3.0))
+_facade_type = int(globals().get("facade_type", 1))
+_pattern_length = float(globals().get("pattern_length", 4.0))
+_pattern_depth = float(globals().get("pattern_depth", 1.0))
+_pattern_ratio = float(globals().get("pattern_ratio", 0.8))
+_pattern_type = int(globals().get("pattern_type", 1))
+_facade_offset = float(globals().get("facade_offset", 0.2))
+_slab_height = float(globals().get("slab_height", 0.0))
+_slab_offset = float(globals().get("slab_offset", 0.0))
 
 facade_generator = FacadeGenerator(
     _building_brep,
-    float(_floor_height),
-    facade_type=int(_facade_type) if _facade_type is not None else 1,
-    pattern_length=float(_pattern_length) if _pattern_length is not None else 4.0,
-    pattern_depth=float(_pattern_depth) if _pattern_depth is not None else 1.0,
-    pattern_ratio=float(_pattern_ratio) if _pattern_ratio is not None else 0.8,
-    facade_offset=float(_facade_offset) if _facade_offset is not None else 0.2,
+    _floor_height,
+    facade_type=_facade_type,
+    pattern_length=_pattern_length,
+    pattern_depth=_pattern_depth,
+    pattern_ratio=_pattern_ratio,
+    facade_offset=_facade_offset,
+    slab_height=_slab_height,
+    slab_offset=_slab_offset,
 )
-facade = facade_generator.generate_facade(_pattern_type)
+facade = facade_generator.generate(_pattern_type)
 
 glasses = facade.glasses
 walls = facade.walls
 frames = facade.frames
+slabs = facade.slabs
