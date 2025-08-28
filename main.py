@@ -202,32 +202,33 @@ class FacadeGenerator:
         return slab_brep_final
 
 
-# Grasshopper 컴포넌트 입력이 있을 때만 실행되도록 안전 가드
-_building_brep = globals().get("building_brep", None)
-_floor_height = float(globals().get("floor_height", 3.0))
-_facade_type = int(globals().get("facade_type", 1))
-_pattern_length = float(globals().get("pattern_length", 4.0))
-_pattern_depth = float(globals().get("pattern_depth", 1.0))
-_pattern_ratio = float(globals().get("pattern_ratio", 0.8))
-_pattern_type = int(globals().get("pattern_type", 1))
-_facade_offset = float(globals().get("facade_offset", 0.2))
-_slab_height = float(globals().get("slab_height", 0.0))
-_slab_offset = float(globals().get("slab_offset", 0.0))
+if __name__ == "__main__":
+    # Grasshopper 컴포넌트 입력이 있을 때만 실행되도록 안전 가드
+    _building_brep = globals().get("building_brep", None)
+    _floor_height = float(globals().get("floor_height", 3.0))
+    _facade_type = int(globals().get("facade_type", 1))
+    _pattern_length = float(globals().get("pattern_length", 4.0))
+    _pattern_depth = float(globals().get("pattern_depth", 1.0))
+    _pattern_ratio = float(globals().get("pattern_ratio", 0.8))
+    _pattern_type = int(globals().get("pattern_type", 1))
+    _facade_offset = float(globals().get("facade_offset", 0.2))
+    _slab_height = float(globals().get("slab_height", 0.0))
+    _slab_offset = float(globals().get("slab_offset", 0.0))
+    print("MAIN.py - FacadeGenerator parameters:")
+    facade_generator = FacadeGenerator(
+        _building_brep,
+        _floor_height,
+        facade_type=_facade_type,
+        pattern_length=_pattern_length,
+        pattern_depth=_pattern_depth,
+        pattern_ratio=_pattern_ratio,
+        facade_offset=_facade_offset,
+        slab_height=_slab_height,
+        slab_offset=_slab_offset,
+    )
+    facade = facade_generator.generate(_pattern_type)
 
-facade_generator = FacadeGenerator(
-    _building_brep,
-    _floor_height,
-    facade_type=_facade_type,
-    pattern_length=_pattern_length,
-    pattern_depth=_pattern_depth,
-    pattern_ratio=_pattern_ratio,
-    facade_offset=_facade_offset,
-    slab_height=_slab_height,
-    slab_offset=_slab_offset,
-)
-facade = facade_generator.generate(_pattern_type)
-
-glasses = facade.glasses
-walls = facade.walls
-frames = facade.frames
-slabs = facade.slabs
+    glasses = facade.glasses
+    walls = facade.walls
+    frames = facade.frames
+    slabs = facade.slabs
