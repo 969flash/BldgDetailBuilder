@@ -37,6 +37,7 @@ class FacadeGenerator:
         facade_offset: float = 0.2,
         slab_height: float = 0.0,
         slab_offset: float = 0.0,
+        bake_block: bool = False,
     ):
         self.building_brep = building_brep
         self.building_curve = utils.get_outline_from_closed_brep(
@@ -65,6 +66,8 @@ class FacadeGenerator:
         # 슬래브 파라미터
         self.slab_height = float(slab_height)
         self.slab_offset = float(slab_offset)
+        # 블록 모드
+        self.bake_block = bool(bake_block)
 
     def _get_building_height(self) -> float:
         # 건물의 높이를 계산하는 로직을 구현합니다.
@@ -93,6 +96,11 @@ class FacadeGenerator:
             building_segs, facade_type_obj, facade_height
         )
 
+        # bake_block: 블록 정의 1개 생성 후 층별 인스턴스 배치
+        if self.bake_block:
+            self._bake_facade_blocks(base_facade)
+            return Facade([], [], [], [])
+
         # 기준층 결과를 층수만큼 복제하여 Z만 이동 배치
         all_glasses, all_walls, all_frames, all_slabs = [], [], [], []
         for floor in range(self.building_floor):
@@ -106,6 +114,122 @@ class FacadeGenerator:
             all_slabs.extend(moved.slabs)
 
         return Facade(all_glasses, all_walls, all_frames, all_slabs)
+
+    # ===== Blocks =====
+    def _bake_facade_blocks(self, base_facade: Facade) -> None:
+        """기준층 파사드를 블록 정의로 만들고, 각 층에 인스턴스를 배치"""
+        try:
+            prev_doc = sc.doc
+        except Exception:
+            prev_doc = None
+        sc.doc = Rhino.RhinoDoc.ActiveDoc
+
+        try:
+            doc = sc.doc
+            # 레이어 준비: Facade / Facade::Glass / Facade::Wall / Facade::Frame
+            facade_idx, glass_idx, wall_idx, frame_idx = self._ensure_facade_layers(doc)
+
+            # 블록 이름 결정: simple_facade_N (중복 시 N++)
+            block_name = self._next_block_name(doc, base="simple_facade")
+
+            # 블록 정의 생성 (기준층 파사드만 포함; 슬래브 제외)
+            geom, attrs = self._facade_geom_attrs(
+                base_facade, glass_idx, wall_idx, frame_idx
+            )
+            if not geom:
+                return
+            idefs = doc.InstanceDefinitions
+            base_pt = geo.Point3d.Origin
+            def_index = idefs.Add(block_name, "Simple Facade", base_pt, geom, attrs)
+            if def_index < 0:
+                return
+
+            # 층별 인스턴스 배치
+            for floor in range(self.building_floor):
+                base_z = floor * self.floor_height
+                if base_z >= self.building_height:
+                    break
+                xform = geo.Transform.Translation(0, 0, base_z)
+                doc.Objects.AddInstanceObject(def_index, xform)
+        finally:
+            if prev_doc is not None:
+                sc.doc = prev_doc
+
+    def _ensure_facade_layers(self, doc) -> tuple[int, int, int, int]:
+        import Rhino.DocObjects as rdo
+
+        def find_layer_index(name: str, parent_id=None) -> int:
+            for i in range(doc.Layers.Count):
+                layer = doc.Layers[i]
+                if layer.Name == name and (
+                    parent_id is None or layer.ParentLayerId == parent_id
+                ):
+                    return i
+            return -1
+
+        # Facade
+        facade_idx = find_layer_index("Facade")
+        if facade_idx < 0:
+            lay = rdo.Layer()
+            lay.Name = "Facade"
+            facade_idx = doc.Layers.Add(lay)
+        facade_id = doc.Layers[facade_idx].Id
+
+        # Sub layers
+        def ensure_sublayer(name: str) -> int:
+            idx = -1
+            for i in range(doc.Layers.Count):
+                layer = doc.Layers[i]
+                if layer.Name == name and layer.ParentLayerId == facade_id:
+                    idx = i
+                    break
+            if idx < 0:
+                sub = rdo.Layer()
+                sub.Name = name
+                sub.ParentLayerId = facade_id
+                idx = doc.Layers.Add(sub)
+            return idx
+
+        glass_idx = ensure_sublayer("Glass")
+        wall_idx = ensure_sublayer("Wall")
+        frame_idx = ensure_sublayer("Frame")
+        return facade_idx, glass_idx, wall_idx, frame_idx
+
+    def _next_block_name(self, doc, base: str = "simple_facade") -> str:
+        name = f"{base}_1"
+        n = 1
+        while True:
+            existing = doc.InstanceDefinitions.Find(name, True)
+            if existing is None or existing.Index < 0:
+                return name
+            n += 1
+            name = f"{base}_{n}"
+
+    def _facade_geom_attrs(
+        self,
+        facade: Facade,
+        glass_layer_idx: int,
+        wall_layer_idx: int,
+        frame_layer_idx: int,
+    ) -> tuple[list[geo.GeometryBase], list[Rhino.DocObjects.ObjectAttributes]]:
+        import Rhino.DocObjects as rdo
+
+        geom: list[geo.GeometryBase] = []
+        attrs: list[rdo.ObjectAttributes] = []
+
+        def add_many(items, layer_idx):
+            for b in items or []:
+                if not b:
+                    continue
+                geom.append(b)
+                a = rdo.ObjectAttributes()
+                a.LayerIndex = layer_idx
+                attrs.append(a)
+
+        add_many(facade.glasses, glass_layer_idx)
+        add_many(facade.walls, wall_layer_idx)
+        add_many(facade.frames, frame_layer_idx)
+        return geom, attrs
 
     def _generate_floor_slab(self, base_z: float) -> Optional[geo.Brep]:
         """층별 슬래브를 생성하는 메서드"""
@@ -230,6 +354,7 @@ if __name__ == "__main__":
     _facade_offset = float(globals().get("facade_offset", 0.2))
     _slab_height = float(globals().get("slab_height", 0.0))
     _slab_offset = float(globals().get("slab_offset", 0.0))
+    _bake_block = bool(globals().get("bake_block", False))
     print("MAIN.py - FacadeGenerator parameters:")
     facade_generator = FacadeGenerator(
         _building_brep,
@@ -241,6 +366,7 @@ if __name__ == "__main__":
         facade_offset=_facade_offset,
         slab_height=_slab_height,
         slab_offset=_slab_offset,
+        bake_block=_bake_block,
     )
     facade = facade_generator.generate(_pattern_type)
 
