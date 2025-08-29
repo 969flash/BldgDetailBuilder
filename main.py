@@ -7,7 +7,6 @@ except ImportError:
 import Rhino.Geometry as geo  # type: ignore
 import scriptcontext as sc  # type: ignore
 import Rhino  # type: ignore
-import ghpythonlib.components as ghcomp  # type: ignore
 import utils
 import facade_plan
 import importlib
@@ -20,7 +19,7 @@ importlib.reload(facade_plan)
 from facade_plan import Facade
 
 ####
-# input : 3D Building  Brep
+# input : 3D Building  Brep, Facade Parameters
 # output : Building Facade Breps
 ####
 
@@ -230,17 +229,6 @@ class FacadeGenerator:
         add_many(facade.walls, wall_layer_idx)
         add_many(facade.frames, frame_layer_idx)
         return geom, attrs
-
-    def _generate_floor_slab(self, base_z: float) -> Optional[geo.Brep]:
-        """층별 슬래브를 생성하는 메서드"""
-        if self.slab_height <= 0:
-            return None
-
-        slab_brep = self._create_slab(0)  # Z=0에서 생성
-        if slab_brep:
-            # base_z 위치로 이동
-            slab_brep = utils.move_brep(slab_brep, geo.Vector3d.ZAxis * base_z)
-        return slab_brep
 
     def _generate_floor_facade(
         self, building_segs, facade_type_obj, base_z: float, facade_height: float

@@ -7,7 +7,6 @@ except ImportError:
 import Rhino.Geometry as geo  # type: ignore
 import scriptcontext as sc  # type: ignore
 import Rhino  # type: ignore
-import ghpythonlib.components as ghcomp  # type: ignore
 import utils
 import facade_plan
 from main import FacadeGenerator
@@ -37,20 +36,22 @@ class MultipleBuilder:
         self,
         building_breps: List[geo.Brep],
         floor_height: float,
-        facade_types: List[int] = None,
-        pattern_lengths: List[float] = None,
-        pattern_depths: List[float] = None,
-        pattern_ratios: List[float] = None,
-        facade_offsets: List[float] = None,
-        slab_heights: List[float] = None,
-        slab_offsets: List[float] = None,
+        facade_types: Optional[List[int]] = None,
+        pattern_lengths: Optional[List[float]] = None,
+        pattern_depths: Optional[List[float]] = None,
+        pattern_ratios: Optional[List[float]] = None,
+        facade_offsets: Optional[List[float]] = None,
+        slab_heights: Optional[List[float]] = None,
+        slab_offsets: Optional[List[float]] = None,
         grouping_tolerance: float = 0.1,
         variation_factor: float = 0.0,
+        bake_block: bool = False,
     ):
         self.building_breps = building_breps
         self.floor_height = float(floor_height)
         self.grouping_tolerance = float(grouping_tolerance)
         self.variation_factor = float(variation_factor)
+        self.bake_block = bool(bake_block)
 
         # 빌딩을 그룹화
         self.building_groups = self._group_buildings()
@@ -205,6 +206,7 @@ class MultipleBuilder:
                         facade_offset=self.group_facade_offsets[i],
                         slab_height=self.group_slab_heights[i],
                         slab_offset=self.group_slab_offsets[i],
+                        bake_block=self.bake_block,
                     )
 
                     # 개별 Brep의 파사드 생성
@@ -278,6 +280,7 @@ if __name__ == "__main__" or "building_breps" in globals():
     _slab_offsets = globals().get("slab_offsets", None)
     _grouping_tolerance = float(globals().get("grouping_tolerance", 0.1))
     _variation_factor = float(globals().get("variation_factor", 0.0))
+    _bake_block = bool(globals().get("bake_block", False))
 
     if _building_breps:
         try:
@@ -293,6 +296,7 @@ if __name__ == "__main__" or "building_breps" in globals():
                 slab_offsets=_slab_offsets,
                 grouping_tolerance=_grouping_tolerance,
                 variation_factor=_variation_factor,
+                bake_block=_bake_block,
             )
 
             # 개별 그룹별 파사드 생성
