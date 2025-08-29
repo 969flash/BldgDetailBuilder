@@ -10,6 +10,7 @@ import Rhino  # type: ignore
 import utils
 import facade_plan
 import importlib
+from dataclasses import dataclass
 
 # 모듈 새로고침
 importlib.reload(utils)
@@ -18,6 +19,49 @@ importlib.reload(facade_plan)
 # facade_plan에서 Facade 클래스를 가져옴
 from facade_plan import Facade
 
+
+@dataclass
+class FGInputs:
+    building_brep: geo.Brep
+    floor_height: float = 3.0
+    facade_type: int = 1
+    pattern_length: float = 4.0
+    pattern_depth: float = 1.0
+    pattern_ratio: float = 0.8
+    facade_offset: float = 0.2
+    slab_height: float = 0.0
+    slab_offset: float = 0.0
+    bake_block: bool = False
+
+    def coerce(self) -> "FGInputs":
+        # Ensure numeric types are proper Python floats/ints
+        self.floor_height = float(self.floor_height)
+        self.facade_type = int(self.facade_type)
+        self.pattern_length = float(self.pattern_length)
+        self.pattern_depth = float(self.pattern_depth)
+        self.pattern_ratio = float(self.pattern_ratio)
+        self.facade_offset = float(self.facade_offset)
+        self.slab_height = float(self.slab_height)
+        self.slab_offset = float(self.slab_offset)
+        self.bake_block = bool(self.bake_block)
+        return self
+
+    @staticmethod
+    def from_globals(globs: dict) -> "FGInputs":
+        return FGInputs(
+            building_brep=globs.get("building_brep", None),
+            floor_height=float(globs.get("floor_height", 3.0)),
+            facade_type=int(globs.get("facade_type", 1)),
+            pattern_length=float(globs.get("pattern_length", 4.0)),
+            pattern_depth=float(globs.get("pattern_depth", 1.0)),
+            pattern_ratio=float(globs.get("pattern_ratio", 0.8)),
+            facade_offset=float(globs.get("facade_offset", 0.2)),
+            slab_height=float(globs.get("slab_height", 0.0)),
+            slab_offset=float(globs.get("slab_offset", 0.0)),
+            bake_block=bool(globs.get("bake_block", False)),
+        ).coerce()
+
+
 ####
 # input : 3D Building  Brep, Facade Parameters
 # output : Building Facade Breps
@@ -25,48 +69,37 @@ from facade_plan import Facade
 
 
 class FacadeGenerator:
-    def __init__(
-        self,
-        building_brep: geo.Brep,
-        floor_height: float,
-        facade_type: int = 1,
-        pattern_length: float = 4.0,
-        pattern_depth: float = 1.0,
-        pattern_ratio: float = 0.8,
-        facade_offset: float = 0.2,
-        slab_height: float = 0.0,
-        slab_offset: float = 0.0,
-        bake_block: bool = False,
-    ):
+    def __init__(self, inputs: FGInputs):
+        inputs = inputs.coerce()
+        self.inputs = inputs
+
+        # Unpack into attributes (keeps backward compatibility inside this class)
+        building_brep = inputs.building_brep
         self.building_brep = building_brep
+        self.floor_height = inputs.floor_height
+        self.facade_type = inputs.facade_type
+        self.pattern_length = inputs.pattern_length
+        self.pattern_depth = inputs.pattern_depth
+        self.pattern_ratio = inputs.pattern_ratio
+        self.slab_height = inputs.slab_height
+        self.slab_offset = inputs.slab_offset
+        self.bake_block = inputs.bake_block
+
         self.building_curve = utils.get_outline_from_closed_brep(
             building_brep, geo.Plane.WorldXY
         )
         self.building_curve = utils.offset_regions_outward(
-            self.building_curve, facade_offset
+            self.building_curve, inputs.facade_offset
         )[0]
 
         self.building_height = self._get_building_height()
         # 층고 및 층수 계산 (반올림 사용). 유효하지 않은 층고 입력은 1층 처리
-        self.floor_height = float(floor_height)
         if self.floor_height > 0:
             self.building_floor = max(
                 1, int(round(self.building_height / self.floor_height))
             )
         else:
             self.building_floor = 1
-
-        # 파사드 타입 및 패턴 파라미터
-        self.facade_type = int(facade_type)
-        self.pattern_length = float(pattern_length)
-        self.pattern_depth = float(pattern_depth)
-        self.pattern_ratio = float(pattern_ratio)
-
-        # 슬래브 파라미터
-        self.slab_height = float(slab_height)
-        self.slab_offset = float(slab_offset)
-        # 블록 모드
-        self.bake_block = bool(bake_block)
 
     def _get_building_height(self) -> float:
         # 건물의 높이를 계산하는 로직을 구현합니다.
@@ -109,14 +142,7 @@ class FacadeGenerator:
             moved = self._move_facade(base_facade, geo.Vector3d(0, 0, base_z))
             floor_facades.append(moved)
 
-        print("Number of floor facades generated:", len(floor_facades))
-        print("Facade Info:")
-        for facade in floor_facades:
-            print(f" - {facade}")
-            print(
-                f"   Glasses: {len(facade.glasses)}, Walls: {len(facade.walls)}, Frames: {len(facade.frames)}, Slabs: {len(facade.slabs)}"
-            )
-
+        # 디버그 출력은 라이브러리 모듈에서는 생략
         return floor_facades
 
     # ===== Blocks =====
@@ -333,46 +359,3 @@ class FacadeGenerator:
                 slab_brep_final, geo.Vector3d.ZAxis * base_z
             )
         return slab_brep_final
-
-
-if __name__ == "__main__":
-    # Grasshopper 컴포넌트 입력이 있을 때만 실행되도록 안전 가드
-    _building_brep = globals().get("building_brep", None)
-    _floor_height = float(globals().get("floor_height", 3.0))
-    _facade_type = int(globals().get("facade_type", 1))
-    _pattern_length = float(globals().get("pattern_length", 4.0))
-    _pattern_depth = float(globals().get("pattern_depth", 1.0))
-    _pattern_ratio = float(globals().get("pattern_ratio", 0.8))
-    _pattern_type = int(globals().get("pattern_type", 1))
-    _facade_offset = float(globals().get("facade_offset", 0.2))
-    _slab_height = float(globals().get("slab_height", 0.0))
-    _slab_offset = float(globals().get("slab_offset", 0.0))
-    _bake_block = bool(globals().get("bake_block", False))
-    print("MAIN.py - FacadeGenerator parameters:")
-    facade_generator = FacadeGenerator(
-        _building_brep,
-        _floor_height,
-        facade_type=_facade_type,
-        pattern_length=_pattern_length,
-        pattern_depth=_pattern_depth,
-        pattern_ratio=_pattern_ratio,
-        facade_offset=_facade_offset,
-        slab_height=_slab_height,
-        slab_offset=_slab_offset,
-        bake_block=_bake_block,
-    )
-    facades = facade_generator.generate(_pattern_type)
-
-    # 편의를 위한 평탄화(기존 출력과의 호환): facades를 하나로 합친 리스트 출력
-    def _flatten(f_list: list[Facade]):
-        g, w, f, s = [], [], [], []
-        for fc in f_list:
-            if not fc:
-                continue
-            g.extend(fc.glasses or [])
-            w.extend(fc.walls or [])
-            f.extend(fc.frames or [])
-            s.extend(fc.slabs or [])
-        return g, w, f, s
-
-    glasses, walls, frames, slabs = _flatten(facades)

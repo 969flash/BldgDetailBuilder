@@ -9,12 +9,13 @@ import scriptcontext as sc  # type: ignore
 import Rhino  # type: ignore
 import utils
 import facade_plan
-import main
+import facade_generator as fg
 import importlib
 import random
+import time
 
 # 모듈 새로고침
-importlib.reload(main)
+importlib.reload(fg)
 importlib.reload(utils)
 importlib.reload(facade_plan)
 
@@ -36,45 +37,51 @@ class MultipleBuilder:
     def __init__(
         self,
         building_breps: List[geo.Brep],
-        floor_height: float,
+        base: fg.FGInputs,
         facade_types: Optional[List[int]] = None,
-        pattern_lengths: Optional[List[float]] = None,
-        pattern_depths: Optional[List[float]] = None,
-        pattern_ratios: Optional[List[float]] = None,
-        facade_offsets: Optional[List[float]] = None,
-        slab_heights: Optional[List[float]] = None,
-        slab_offsets: Optional[List[float]] = None,
         grouping_tolerance: float = 0.1,
         variation_factor: float = 0.0,
-        bake_block: bool = False,
     ):
+        # 기본/공통 입력
+        base = base.coerce()
         self.building_breps = building_breps
-        self.floor_height = float(floor_height)
+        self.floor_height = float(base.floor_height)
         self.grouping_tolerance = float(grouping_tolerance)
         self.variation_factor = float(variation_factor)
-        self.bake_block = bool(bake_block)
+        self.bake_block = bool(base.bake_block)
 
         # 빌딩을 그룹화
         self.building_groups = self._group_buildings()
         self.num_groups = len(self.building_groups)
 
         # 랜덤 시드 설정 (매번 다른 결과를 위해)
-        import time
-
         random.seed(int(time.time() * 1000) % 10000)
 
-        # 파사드 타입은 리스트에서 랜덤 선택을 위해 원본 저장
-        self.facade_type_options = facade_types if facade_types else [1]
+        # 파사드 타입은 리스트에서 랜덤 선택 풀로 사용 (미지정 시 base.facade_type 사용)
+        self.facade_type_options = (
+            facade_types if facade_types else [int(base.facade_type)]
+        )
 
         # 파라미터들을 그룹 수에 맞게 조정하고 랜덤 변동 적용
+        # 이제 외부에서 리스트를 받지 않고 base 값 하나만 받아 내부에서 확장
         self.group_pattern_lengths = self._prepare_group_parameters(
-            pattern_lengths, 4.0
+            None, float(base.pattern_length)
         )
-        self.group_pattern_depths = self._prepare_group_parameters(pattern_depths, 1.0)
-        self.group_pattern_ratios = self._prepare_group_parameters(pattern_ratios, 0.8)
-        self.group_facade_offsets = self._prepare_group_parameters(facade_offsets, 0.2)
-        self.group_slab_heights = self._prepare_group_parameters(slab_heights, 0.0)
-        self.group_slab_offsets = self._prepare_group_parameters(slab_offsets, 0.0)
+        self.group_pattern_depths = self._prepare_group_parameters(
+            None, float(base.pattern_depth)
+        )
+        self.group_pattern_ratios = self._prepare_group_parameters(
+            None, float(base.pattern_ratio)
+        )
+        self.group_facade_offsets = self._prepare_group_parameters(
+            None, float(base.facade_offset)
+        )
+        self.group_slab_heights = self._prepare_group_parameters(
+            None, float(base.slab_height)
+        )
+        self.group_slab_offsets = self._prepare_group_parameters(
+            None, float(base.slab_offset)
+        )
 
     def _prepare_group_parameters(
         self, param_list: Optional[List], default_value
@@ -198,9 +205,9 @@ class MultipleBuilder:
                 # 그룹 내 각 Brep에 대해 개별적으로 파사드 생성 (같은 그룹은 동일한 파라미터 사용)
                 group_facades: List[Facade] = []
                 for brep in building_group.breps:
-                    facade_generator = main.FacadeGenerator(
-                        brep,
-                        self.floor_height,
+                    inputs = fg.FGInputs(
+                        building_brep=brep,
+                        floor_height=self.floor_height,
                         facade_type=group_facade_types[i],
                         pattern_length=self.group_pattern_lengths[i],
                         pattern_depth=self.group_pattern_depths[i],
@@ -210,6 +217,7 @@ class MultipleBuilder:
                         slab_offset=self.group_slab_offsets[i],
                         bake_block=self.bake_block,
                     )
+                    facade_generator = fg.FacadeGenerator(inputs)
 
                     # 개별 Brep의 파사드 생성
                     floor_facades = facade_generator.generate(pattern_types[i])
@@ -246,83 +254,67 @@ class MultipleBuilder:
             )
         return info
 
+    @classmethod
+    def from_inputs(
+        cls,
+        building_breps: List[geo.Brep],
+        base: fg.FGInputs,
+        *,
+        facade_types: Optional[List[int]] = None,
+        grouping_tolerance: float = 0.1,
+        variation_factor: float = 0.0,
+    ) -> "MultipleBuilder":
+        """FGInputs 하나로 MultipleBuilder 생성 (내부에서 그룹 파라미터 확장)"""
+        return cls(
+            building_breps,
+            base,
+            facade_types=facade_types,
+            grouping_tolerance=grouping_tolerance,
+            variation_factor=variation_factor,
+        )
+
+    @classmethod
+    def from_globals(cls, globs: dict):
+        base = fg.FGInputs.from_globals(globs)
+        building_breps = globs.get("building_breps", [])
+        grouping_tolerance = float(globs.get("grouping_tolerance", 0.1))
+        variation_factor = float(globs.get("variation_factor", 0.0))
+        facade_types = globs.get("facade_types", None)
+        mb = cls.from_inputs(
+            building_breps,
+            base,
+            facade_types=facade_types,
+            grouping_tolerance=grouping_tolerance,
+            variation_factor=variation_factor,
+        )
+        pattern_types = globs.get("pattern_types", None)
+        return mb, pattern_types
+
+
+def _flatten(fs: List[Facade]):
+    g, w, f, s = [], [], [], []
+    for fc in fs or []:
+        g.extend(fc.glasses or [])
+        w.extend(fc.walls or [])
+        f.extend(fc.frames or [])
+        s.extend(fc.slabs or [])
+    return g, w, f, s
+
 
 # Grasshopper 컴포넌트 입력이 있을 때만 실행되도록 안전 가드
 if __name__ == "__main__" or "building_breps" in globals():
-    _building_breps = globals().get("building_breps", [])
-    _floor_height = float(globals().get("floor_height", 3.0))
-    _facade_types = globals().get("facade_types", None)
-    _pattern_lengths = globals().get("pattern_lengths", None)
-    _pattern_depths = globals().get("pattern_depths", None)
-    _pattern_ratios = globals().get("pattern_ratios", None)
-    _pattern_types = globals().get("pattern_types", None)
-    _facade_offsets = globals().get("facade_offsets", None)
-    _slab_heights = globals().get("slab_heights", None)
-    _slab_offsets = globals().get("slab_offsets", None)
-    _grouping_tolerance = float(globals().get("grouping_tolerance", 0.1))
-    _variation_factor = float(globals().get("variation_factor", 0.0))
-    _bake_block = bool(globals().get("bake_block", False))
+    mb, _pattern_types = MultipleBuilder.from_globals(globals())
 
-    if _building_breps:
-        try:
-            multiple_builder = MultipleBuilder(
-                _building_breps,
-                _floor_height,
-                facade_types=_facade_types,
-                pattern_lengths=_pattern_lengths,
-                pattern_depths=_pattern_depths,
-                pattern_ratios=_pattern_ratios,
-                facade_offsets=_facade_offsets,
-                slab_heights=_slab_heights,
-                slab_offsets=_slab_offsets,
-                grouping_tolerance=_grouping_tolerance,
-                variation_factor=_variation_factor,
-                bake_block=_bake_block,
-            )
+    try:
+        group_facades = mb.generate_all_facades(_pattern_types)
+        facades = mb.get_combined_facade(_pattern_types)
+        group_info = mb.get_group_info()
 
-            # 개별 그룹별 파사드(층 리스트) 생성
-            group_facades = multiple_builder.generate_all_facades(
-                _pattern_types
-            )  # List[List[Facade]]
-
-            # 통합 파사드 리스트 생성 (모든 그룹/모든 층)
-            facades = multiple_builder.get_combined_facade(
-                _pattern_types
-            )  # List[Facade]
-
-            # 그룹 정보
-            group_info = multiple_builder.get_group_info()
-
-            # 출력 변수들
-            # 편의를 위한 평탄화 출력(기존과 호환): facades를 모두 합쳐 Brep 리스트로 제공
-            def _flatten(fs: List[Facade]):
-                g, w, f, s = [], [], [], []
-                for fc in fs:
-                    if not fc:
-                        continue
-                    g.extend(fc.glasses or [])
-                    w.extend(fc.walls or [])
-                    f.extend(fc.frames or [])
-                    s.extend(fc.slabs or [])
-                return g, w, f, s
-
-            glasses, walls, frames, slabs = _flatten(facades)
-
-            # 개별 그룹 정보도 출력
-            num_groups = len(group_info)
-            group_brep_counts = [info["brep_count"] for info in group_info]
-
-        except Exception as e:
-            print(f"Error in MultipleBuilder: {e}")
-            # 에러 발생 시 빈 결과 반환
-            glasses = []
-            walls = []
-            frames = []
-            slabs = []
-            num_groups = 0
-            group_brep_counts = []
-    else:
-        # 빈 결과 반환
+        glasses, walls, frames, slabs = _flatten(facades)
+        num_groups = len(group_info)
+        group_brep_counts = [info["brep_count"] for info in group_info]
+    except Exception as e:
+        print(f"Error in MultipleBuilder: {e}")
         glasses = []
         walls = []
         frames = []
