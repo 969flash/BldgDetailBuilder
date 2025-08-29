@@ -24,7 +24,6 @@ from facade_plan import Facade
 class FGInputs:
     building_brep: geo.Brep
     floor_height: float = 3.0
-    facade_type: int = 1
     pattern_length: float = 4.0
     pattern_depth: float = 1.0
     pattern_ratio: float = 0.8
@@ -36,7 +35,6 @@ class FGInputs:
     def coerce(self) -> "FGInputs":
         # Ensure numeric types are proper Python floats/ints
         self.floor_height = float(self.floor_height)
-        self.facade_type = int(self.facade_type)
         self.pattern_length = float(self.pattern_length)
         self.pattern_depth = float(self.pattern_depth)
         self.pattern_ratio = float(self.pattern_ratio)
@@ -51,7 +49,6 @@ class FGInputs:
         return FGInputs(
             building_brep=globs.get("building_brep", None),
             floor_height=float(globs.get("floor_height", 3.0)),
-            facade_type=int(globs.get("facade_type", 1)),
             pattern_length=float(globs.get("pattern_length", 4.0)),
             pattern_depth=float(globs.get("pattern_depth", 1.0)),
             pattern_ratio=float(globs.get("pattern_ratio", 0.8)),
@@ -77,7 +74,6 @@ class FacadeGenerator:
         building_brep = inputs.building_brep
         self.building_brep = building_brep
         self.floor_height = inputs.floor_height
-        self.facade_type = inputs.facade_type
         self.pattern_length = inputs.pattern_length
         self.pattern_depth = inputs.pattern_depth
         self.pattern_ratio = inputs.pattern_ratio
