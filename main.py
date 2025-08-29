@@ -78,8 +78,6 @@ class FacadeGenerator:
             )
 
         building_segs = utils.explode_curve(self.building_curve)
-        all_glasses, all_walls, all_frames, all_slabs = [], [], [], []
-
         facade_type_obj = facade_plan.FacadeTypeRegistry.create_facade_type(
             pattern_type,
             self.pattern_length,
@@ -88,29 +86,24 @@ class FacadeGenerator:
             self.building_curve,
         )
 
+        # 기준층(0층) 파사드/슬래브를 한 번만 생성
+        base_floor_height = min(self.floor_height, self.building_height)
+        facade_height = base_floor_height - self.slab_height
+        base_facade = self._generate_base_floor(
+            building_segs, facade_type_obj, facade_height
+        )
+
+        # 기준층 결과를 층수만큼 복제하여 Z만 이동 배치
+        all_glasses, all_walls, all_frames, all_slabs = [], [], [], []
         for floor in range(self.building_floor):
             base_z = floor * self.floor_height
             if base_z >= self.building_height:
                 break
-
-            # 층별 전체 높이 계산
-            floor_height = min(self.floor_height, self.building_height - base_z)
-
-            # 슬래브 생성
-            slab_brep = self._generate_floor_slab(base_z)
-            if slab_brep:
-                all_slabs.append(slab_brep)
-
-            # 파사드 높이 계산 (슬래브 높이 제외)
-            facade_height = floor_height - self.slab_height
-
-            # 파사드 생성
-            facades = self._generate_floor_facade(
-                building_segs, facade_type_obj, base_z, facade_height
-            )
-            all_glasses.extend(facades["glasses"])
-            all_walls.extend(facades["walls"])
-            all_frames.extend(facades["frames"])
+            moved = self._move_facade(base_facade, geo.Vector3d(0, 0, base_z))
+            all_glasses.extend(moved.glasses)
+            all_walls.extend(moved.walls)
+            all_frames.extend(moved.frames)
+            all_slabs.extend(moved.slabs)
 
         return Facade(all_glasses, all_walls, all_frames, all_slabs)
 
@@ -149,6 +142,29 @@ class FacadeGenerator:
             frames.extend(seg_facade.frames)
 
         return {"glasses": glasses, "walls": walls, "frames": frames}
+
+    def _generate_base_floor(
+        self, building_segs, facade_type_obj, facade_height: float
+    ) -> Facade:
+        """기준층(0층)의 슬래브와 파사드를 한 번 생성하여 반환"""
+        # 기준층 슬래브 (Z=0~slab_height)
+        slabs: list[geo.Brep] = []
+        if self.slab_height > 0:
+            slab_brep = self._create_slab(0)
+            if slab_brep:
+                slabs.append(slab_brep)
+
+        # 기준층 파사드 (슬래브 상단부터 facade_height 만큼)
+        glasses, walls, frames = [], [], []
+        if facade_height > 0:
+            facades = self._generate_floor_facade(
+                building_segs, facade_type_obj, 0, facade_height
+            )
+            glasses.extend(facades["glasses"])
+            walls.extend(facades["walls"])
+            frames.extend(facades["frames"])
+
+        return Facade(glasses, walls, frames, slabs)
 
     def _move_facade(self, facade: Facade, vector: geo.Vector3d) -> Facade:
         def _mv(b: geo.Brep) -> geo.Brep:
