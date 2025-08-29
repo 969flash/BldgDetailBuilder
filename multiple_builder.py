@@ -9,11 +9,12 @@ import scriptcontext as sc  # type: ignore
 import Rhino  # type: ignore
 import utils
 import facade_plan
-from main import FacadeGenerator
+import main
 import importlib
 import random
 
 # 모듈 새로고침
+importlib.reload(main)
 importlib.reload(utils)
 importlib.reload(facade_plan)
 
@@ -171,8 +172,10 @@ class MultipleBuilder:
             print(f"Error calculating distance between buildings: {e}")
             return False
 
-    def generate_all_facades(self, pattern_types: List[int] = None) -> List[Facade]:
-        """모든 빌딩 그룹에 대해 파사드를 생성하는 메서드"""
+    def generate_all_facades(
+        self, pattern_types: List[int] = None
+    ) -> List[List[Facade]]:
+        """모든 빌딩 그룹에 대해 층별 Facade 리스트를 생성하여 그룹별로 반환"""
         if pattern_types is None:
             pattern_types = [1] * self.num_groups
         else:
@@ -188,15 +191,14 @@ class MultipleBuilder:
         # 각 그룹별로 파사드 타입 미리 결정
         group_facade_types = self._get_random_facade_types()
 
-        all_facades = []
+        all_group_facades: List[List[Facade]] = []
 
         for i, building_group in enumerate(self.building_groups):
             try:
-                group_glasses, group_walls, group_frames, group_slabs = [], [], [], []
-
                 # 그룹 내 각 Brep에 대해 개별적으로 파사드 생성 (같은 그룹은 동일한 파라미터 사용)
+                group_facades: List[Facade] = []
                 for brep in building_group.breps:
-                    facade_generator = FacadeGenerator(
+                    facade_generator = main.FacadeGenerator(
                         brep,
                         self.floor_height,
                         facade_type=group_facade_types[i],
@@ -210,47 +212,26 @@ class MultipleBuilder:
                     )
 
                     # 개별 Brep의 파사드 생성
-                    facade = facade_generator.generate(pattern_types[i])
+                    floor_facades = facade_generator.generate(pattern_types[i])
+                    # floor_facades: List[Facade] (또는 빈 리스트 - 블록 모드)
+                    if floor_facades:
+                        group_facades.extend(floor_facades)
 
-                    # 그룹 파사드에 추가
-                    group_glasses.extend(facade.glasses)
-                    group_walls.extend(facade.walls)
-                    group_frames.extend(facade.frames)
-                    group_slabs.extend(facade.slabs)
-
-                # 그룹의 통합 파사드 생성
-                group_facade = Facade(
-                    group_glasses, group_walls, group_frames, group_slabs
-                )
-                all_facades.append(group_facade)
-
-                print(
-                    f"Generated facade for building group {i+1} with {len(building_group.breps)} breps"
-                )
+                all_group_facades.append(group_facades)
 
             except Exception as e:
-                print(f"Error generating facade for building group {i+1}: {e}")
-                # 빈 파사드 추가
-                all_facades.append(Facade([], [], [], []))
+                print(f"[MultipleBuilder] Error in group loop {i+1}: {e}")
+                all_group_facades.append([])
 
-        return all_facades
+        return all_group_facades
 
-    def get_combined_facade(self, pattern_types: List[int] = None) -> Facade:
-        """모든 그룹의 파사드를 하나로 합치는 메서드"""
-        all_facades = self.generate_all_facades(pattern_types)
-
-        combined_glasses = []
-        combined_walls = []
-        combined_frames = []
-        combined_slabs = []
-
-        for facade in all_facades:
-            combined_glasses.extend(facade.glasses)
-            combined_walls.extend(facade.walls)
-            combined_frames.extend(facade.frames)
-            combined_slabs.extend(facade.slabs)
-
-        return Facade(combined_glasses, combined_walls, combined_frames, combined_slabs)
+    def get_combined_facade(self, pattern_types: List[int] = None) -> List[Facade]:
+        """모든 그룹의 층별 Facade를 하나의 리스트로 평탄화하여 반환"""
+        group_facade_lists = self.generate_all_facades(pattern_types)
+        combined: List[Facade] = []
+        for facades in group_facade_lists:
+            combined.extend(facades or [])
+        return combined
 
     def get_group_info(self) -> List[Dict[str, Any]]:
         """그룹화 정보를 반환하는 메서드"""
@@ -299,20 +280,33 @@ if __name__ == "__main__" or "building_breps" in globals():
                 bake_block=_bake_block,
             )
 
-            # 개별 그룹별 파사드 생성
-            group_facades = multiple_builder.generate_all_facades(_pattern_types)
+            # 개별 그룹별 파사드(층 리스트) 생성
+            group_facades = multiple_builder.generate_all_facades(
+                _pattern_types
+            )  # List[List[Facade]]
 
-            # 통합 파사드 생성
-            combined_facade = multiple_builder.get_combined_facade(_pattern_types)
+            # 통합 파사드 리스트 생성 (모든 그룹/모든 층)
+            facades = multiple_builder.get_combined_facade(
+                _pattern_types
+            )  # List[Facade]
 
             # 그룹 정보
             group_info = multiple_builder.get_group_info()
 
             # 출력 변수들
-            glasses = combined_facade.glasses
-            walls = combined_facade.walls
-            frames = combined_facade.frames
-            slabs = combined_facade.slabs
+            # 편의를 위한 평탄화 출력(기존과 호환): facades를 모두 합쳐 Brep 리스트로 제공
+            def _flatten(fs: List[Facade]):
+                g, w, f, s = [], [], [], []
+                for fc in fs:
+                    if not fc:
+                        continue
+                    g.extend(fc.glasses or [])
+                    w.extend(fc.walls or [])
+                    f.extend(fc.frames or [])
+                    s.extend(fc.slabs or [])
+                return g, w, f, s
+
+            glasses, walls, frames, slabs = _flatten(facades)
 
             # 개별 그룹 정보도 출력
             num_groups = len(group_info)

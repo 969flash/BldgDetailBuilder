@@ -73,7 +73,7 @@ class FacadeGenerator:
         bbox = self.building_brep.GetBoundingBox(True)
         return bbox.Max.Z - bbox.Min.Z
 
-    def generate(self, pattern_type: int = 1) -> Facade:
+    def generate(self, pattern_type: int = 1) -> list[Facade]:
         if self.slab_height >= self.floor_height:
             raise ValueError(
                 f"slab_height ({self.slab_height}) must be less than floor_height ({self.floor_height})"
@@ -98,21 +98,26 @@ class FacadeGenerator:
         # bake_block: 블록 정의 1개 생성 후 층별 인스턴스 배치
         if self.bake_block:
             self._bake_facade_blocks(base_facade)
-            return Facade([], [], [], [])
+            return []
 
-        # 기준층 결과를 층수만큼 복제하여 Z만 이동 배치
-        all_glasses, all_walls, all_frames, all_slabs = [], [], [], []
+        # 기준층 결과를 층수만큼 복제하여 Z만 이동 배치 (층별 Facade 리스트 반환)
+        floor_facades: list[Facade] = []
         for floor in range(self.building_floor):
             base_z = floor * self.floor_height
             if base_z >= self.building_height:
                 break
             moved = self._move_facade(base_facade, geo.Vector3d(0, 0, base_z))
-            all_glasses.extend(moved.glasses)
-            all_walls.extend(moved.walls)
-            all_frames.extend(moved.frames)
-            all_slabs.extend(moved.slabs)
+            floor_facades.append(moved)
 
-        return Facade(all_glasses, all_walls, all_frames, all_slabs)
+        print("Number of floor facades generated:", len(floor_facades))
+        print("Facade Info:")
+        for facade in floor_facades:
+            print(f" - {facade}")
+            print(
+                f"   Glasses: {len(facade.glasses)}, Walls: {len(facade.walls)}, Frames: {len(facade.frames)}, Slabs: {len(facade.slabs)}"
+            )
+
+        return floor_facades
 
     # ===== Blocks =====
     def _bake_facade_blocks(self, base_facade: Facade) -> None:
@@ -356,9 +361,18 @@ if __name__ == "__main__":
         slab_offset=_slab_offset,
         bake_block=_bake_block,
     )
-    facade = facade_generator.generate(_pattern_type)
+    facades = facade_generator.generate(_pattern_type)
 
-    glasses = facade.glasses
-    walls = facade.walls
-    frames = facade.frames
-    slabs = facade.slabs
+    # 편의를 위한 평탄화(기존 출력과의 호환): facades를 하나로 합친 리스트 출력
+    def _flatten(f_list: list[Facade]):
+        g, w, f, s = [], [], [], []
+        for fc in f_list:
+            if not fc:
+                continue
+            g.extend(fc.glasses or [])
+            w.extend(fc.walls or [])
+            f.extend(fc.frames or [])
+            s.extend(fc.slabs or [])
+        return g, w, f, s
+
+    glasses, walls, frames, slabs = _flatten(facades)
